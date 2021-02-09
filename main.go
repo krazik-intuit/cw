@@ -15,10 +15,12 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/TylerBrock/colorjson"
 	"github.com/alecthomas/kong"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs/types"
+	"github.com/go-logfmt/logfmt"
 
 	"github.com/fatih/color"
 	"github.com/jmespath/go-jmespath"
@@ -27,7 +29,7 @@ import (
 
 const (
 	timeFormat = "2006-01-02T15:04:05"
-	version    = "4.1.0"
+	version    = "4.1.0-rhazelton"
 )
 
 func timestampToTime(timeStamp *string, local bool) (time.Time, error) {
@@ -117,12 +119,106 @@ func (f logEventFormatter) jmespathQuery(s string, query jmespath.JMESPath) stri
 	return string(searchResult)
 }
 
+func messageColorParse(msg string) string {
+	// if multiline log, split lines and recurse
+	lines := regexp.MustCompile("\n+").Split(msg, -1)
+	if len(lines) > 1 {
+		msg = ""
+		for _, line := range lines {
+			if msg != "" {
+				msg = msg + "\n"
+			}
+			msg = msg + messageColorParse(line)
+		}
+		return msg
+	}
+
+	var jsonObj interface{}
+	addBell := false
+	// if json object, print colorized json msg
+	if json.Unmarshal([]byte(msg), &jsonObj) == nil {
+		s, _ := colorjson.Marshal(jsonObj)
+		msg = string(s)
+	} else if strings.Count(msg, "=") > 2 {
+		// if string has more than two equal signs (to avoid base64) decode message
+		colorHiWhite := color.New(color.FgHiWhite)
+		colorBlack := color.New(color.FgBlack)
+		colorHighWhiteOnRedBg := colorHiWhite.Add(color.BgHiRed)
+		colorBlackOnYellowBg := colorBlack.Add(color.BgHiYellow)
+
+		d := logfmt.NewDecoder(strings.NewReader(msg))
+		msg = ""
+		for d.ScanRecord() {
+			for d.ScanKeyval() {
+				key := string(d.Key())
+				msg = msg + color.WhiteString(key)
+				if d.Value() != nil && len(d.Value()) > 0 {
+					var value string
+					if json.Unmarshal(d.Value(), &jsonObj) == nil {
+						s, _ := colorjson.Marshal(jsonObj)
+						value = string(s)
+					} else {
+						value = string(d.Value())
+						if strings.Contains(value, " ") {
+							// add quotes since has spaces
+							value = fmt.Sprintf("\"%s\"", value)
+						}
+					}
+					msg = msg + color.HiBlackString("=")
+					if key == "level" {
+						lcValue := strings.ToLower(value)
+						if strings.Contains(lcValue, "error") {
+							value = colorHighWhiteOnRedBg.Sprint(strings.ToUpper(value))
+						} else if strings.Contains(lcValue, "warn") {
+							value = colorBlackOnYellowBg.Sprint(strings.ToUpper(value))
+						} else if strings.Contains(lcValue, "info") {
+							value = color.HiCyanString(value)
+						}
+					} else if key == "error" {
+						addBell = true
+						value = color.HiRedString(value)
+					} else if key == "msg" || key == "message" {
+						value = color.HiMagentaString(value)
+					} else {
+						value = color.HiGreenString(value)
+					}
+					msg = msg + value
+				}
+				msg = msg + " "
+			}
+		}
+	} else {
+		// low tech string matching for colors
+		lcMsg := strings.ToLower(msg)
+		if strings.Contains(lcMsg, "error") {
+			addBell = true
+			msg = color.HiRedString(msg)
+		} else if strings.Contains(lcMsg, "warn") {
+			msg = color.HiYellowString(msg)
+		} else if strings.Contains(lcMsg, "info") {
+			msg = color.HiCyanString(msg)
+		} else if strings.Contains(lcMsg, "succe") { // success and succeed(ed)
+			msg = color.HiGreenString(msg)
+		} else if strings.HasPrefix(msg, "START RequestId") || strings.HasPrefix(msg, "END RequestId") || strings.HasPrefix(msg, "REPORT RequestId") || strings.HasPrefix(msg, "XRAY TraceId") { // not case-insensitive
+			msg = color.HiBlackString(msg)
+		}
+	}
+	// add terminal "bell" (ctrl-g = /a) - uses nocolor flag to disable for now
+	if addBell && !color.NoColor {
+		msg = msg + color.HiRedString("(🔔)\a")
+	}
+
+	return msg
+}
+
 func (f logEventFormatter) formatLogMsg(ev logEvent) string {
-	msg := *ev.logEvent.Message
+	msg := strings.TrimSuffix(*ev.logEvent.Message, "\n")
 
 	if f.FormatConfig.Query != nil {
 		msg = f.jmespathQuery(msg, *f.FormatConfig.Query)
 	}
+
+	msg = messageColorParse(msg)
 
 	if f.FormatConfig.PrintEventID {
 		msg = fmt.Sprintf("%s - %s", color.YellowString(*ev.logEvent.EventId), msg)

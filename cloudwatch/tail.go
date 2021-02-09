@@ -14,6 +14,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs/types"
+	"github.com/fatih/color"
 )
 
 type logStreamsType struct {
@@ -215,11 +216,11 @@ func Tail(cwc *cloudwatchlogs.Client,
 							time.Sleep(250 * time.Millisecond)
 							res, err = paginator.NextPage(context.TODO())
 							if err != nil {
-								fmt.Fprintln(os.Stderr, err.Error())
+								fmt.Fprintln(os.Stderr, color.HiRedString(err.Error()))
 								os.Exit(1)
 							}
 						} else {
-							fmt.Fprintln(os.Stderr, err.Error())
+							fmt.Fprintln(os.Stderr, color.HiRedString(err.Error()))
 							os.Exit(1)
 						}
 					}
